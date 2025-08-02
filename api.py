@@ -3,9 +3,12 @@ import requests
 import warnings
 from typing import Callable
 import urllib.parse
-import json
-
+import json 
+import fetch_paper
+import re
 ACCESS_TOKEN="sk-VN48920329mF334e414B"
+
+PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份论文小结，50字以内。"
 
 def fully_url_decode(s: str) -> str:
     """重复 URL 解码，直到没有 %xx 为止"""
@@ -31,6 +34,33 @@ def clean_json_string(raw_str: str):
     except json.JSONDecodeError:
         # 不是标准 JSON 就直接返回纯文本
         return decoded
+
+def extract_core_content(raw_content: str) -> str:
+    """
+    从原始响应中提取核心增量文本
+    步骤：1. 提取<markdown>标签内的内容 2. 解析JSON 3. 获取content.content字段
+    """
+    try:
+        # 1. 用正则提取<markdown>标签内的内容（处理可能的引号和转义）
+        markdown_match = re.search(r'<markdown>(.*?)</markdown>', raw_content, re.DOTALL)
+        if not markdown_match:
+            return ""
+        markdown_str = markdown_match.group(1).strip()
+        
+        # 2. 去除可能的外层引号（如示例中的\"）
+        markdown_str = re.sub(r'^["\']|["\']$', '', markdown_str)
+        
+        # 3. 解析JSON（处理可能的转义字符）
+        markdown_json = json.loads(markdown_str)
+        if isinstance(markdown_json, list) and len(markdown_json) > 0:
+            # 提取content.content字段
+            thinking_content = markdown_json[0].get("content", {}).get("content", "")
+            return thinking_content
+        return ""
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        # 解析失败时返回原始内容（便于调试）
+        warnings.warn(f"解析核心内容失败: {e}，原始内容: {raw_content[:100]}")
+        return ""
 
 
 
@@ -83,68 +113,6 @@ def make_authenticated_request(url, access_token):
             error_info['timeout'] = 10
         raise requests.exceptions.RequestException(f"请求失败: {error_info}") from e
 
-def handle_text_stream(url: str,
-                       access_token: str,
-                       payload: dict,
-                       callback: Callable[[str], None],
-                       chunk_size: int = 1024,
-                       delimiter: str = '\n\n') -> None:
-    """
-    处理纯文本SSE流式响应的核心方法
-
-    参数说明：
-    url: 流式接口端点
-    access_token: 认证令牌
-    payload: 请求负载字典
-    callback: 每收到一个完整事件时触发的回调函数
-    chunk_size: 网络读取块大小（字节）
-    delimiter: 事件分隔符（默认SSE标准的双换行）
-    """
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Accept': 'text/event-stream',
-        'Content-Type': 'application/json'
-    }
-
-    buffer = ''  # 跨数据块的缓冲区
-    try:
-        with requests.post(url,
-                           headers=headers,
-                           json=payload,
-                           stream=True,
-                           timeout=(3.05, 30)) as resp:
-
-            resp.raise_for_status()
-
-            for byte_chunk in resp.iter_content(chunk_size=chunk_size):
-                if not byte_chunk:
-                    continue
-
-                # 解码并处理编码问题
-                try:
-                    text_chunk = byte_chunk.decode('utf-8')
-                    # text_chunk = fully_url_decode(byte_chunk)
-                    # print("收到 chunk text 进行decode 处理")
-                except UnicodeDecodeError:
-                    text_chunk = byte_chunk.decode('utf-8', errors='replace')
-                    warnings.warn("检测到非UTF-8编码字符，已替换异常编码点")
-
-
-
-                buffer += text_chunk
-
-                # 分割完整事件
-                while delimiter in buffer:
-                    event_raw, buffer = buffer.split(delimiter, 1)
-                    process_sse_event(event_raw.strip(), callback)
-
-    except requests.exceptions.RequestException as e:
-        error_msg = f"流式连接异常: {str(e)}"
-        if buffer:
-            error_msg += f"\n未处理缓冲数据: {buffer[:200]}{'...' if len(buffer) > 200 else ''}"
-        callback(f"[ERROR] {error_msg}")
-
-
 def process_sse_event(raw_event: str, callback: Callable[[str], None]) -> None:
     """
     解析SSE事件格式并提取纯文本内容
@@ -171,10 +139,85 @@ def process_sse_event(raw_event: str, callback: Callable[[str], None]) -> None:
     if full_content:
         callback(full_content)
 
+def handle_text_stream(url: str, access_token: str, payload: dict, callback: Callable[[str], None]):
+    """处理流式响应，提取核心内容后调用回调"""
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Accept': 'text/event-stream',
+        'Content-Type': 'application/json'
+    }
+    buffer = ''
+    try:
+        with requests.post(url, headers=headers, json=payload, stream=True, timeout=(3.05, 30)) as resp:
+            resp.raise_for_status()
+            for byte_chunk in resp.iter_content(chunk_size=1024):
+                if not byte_chunk:
+                    continue
+                try:
+                    text_chunk = byte_chunk.decode('utf-8')
+                except UnicodeDecodeError:
+                    text_chunk = byte_chunk.decode('utf-8', errors='replace')
+                
+                buffer += text_chunk
+                
+                # 按SSE分隔符处理完整事件
+                while '\n\n' in buffer:
+                    event_raw, buffer = buffer.split('\n\n', 1)
+                    # 提取data字段内容
+                    data_lines = [line[5:].lstrip() for line in event_raw.split('\n') if line.startswith('data:')]
+                    full_event = '\n'.join(data_lines)
+                    full_event = fully_url_decode(full_event)
+                    
+                    # 提取核心增量文本
+                    core_content = extract_core_content(full_event)
+                    if core_content:
+                        callback(core_content)
+    except requests.exceptions.RequestException as e:
+        callback(f"[ERROR] 流式连接异常: {str(e)}")
+
+def get_summary(prompt,text):
+    text=prompt+ text
+    # get session id
+    try:
+        result = make_authenticated_request(
+            url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/generate",
+            access_token=ACCESS_TOKEN
+        )
+        res_data=result.get('data')
+        session_id = res_data.get('data')
+
+    except requests.exceptions.RequestException as e:
+        print(f"请求发生错误: {e}")
+
+    def demo_callback(content: str):
+        """简单的控制台打印回调"""
+        if content.startswith('[ERROR]'):
+            print(f"\033[31m{content}\033[0m")
+        else:
+            print(f"收到内容: {content}")
+
+    if session_id :
+        
+        try:
+            handle_text_stream(
+                url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/sendMsg",
+                access_token=ACCESS_TOKEN,
+                payload={
+                    "text": text,
+                    "sessionId": session_id,
+                    "module": "GeoGPT-R1-Preview" #[ Qwen2.5-72B-GeoGPT , GeoGPT-R1-Preview , DeepSeekR1-GeoGPT ]
+                },
+                callback=demo_callback
+            )
+        except KeyboardInterrupt:
+            print("\n用户主动终止连接")
 
 # 使用示例
 # 发送消息 开始对话
 if __name__ == "__main__":
+    papers = fetch_paper.load_paper_list()
+    text=fetch_paper.fetch_paper(papers)[0]
+    text= PROMPT
     # get session id
     try:
         result = make_authenticated_request(
@@ -211,7 +254,7 @@ if __name__ == "__main__":
                 url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/sendMsg",
                 access_token=ACCESS_TOKEN,
                 payload={
-                    "text": "你好呀",
+                    "text": text,
                     "sessionId": session_id,
                     "module": "GeoGPT-R1-Preview" #[ Qwen2.5-72B-GeoGPT , GeoGPT-R1-Preview , DeepSeekR1-GeoGPT ]
                 },
