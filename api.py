@@ -8,7 +8,7 @@ import fetch_paper
 import re
 ACCESS_TOKEN="sk-VN48920329mF334e414B"
 
-PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份论文小结，50字以内。"
+PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份论文小结，。"
 
 def fully_url_decode(s: str) -> str:
     """重复 URL 解码，直到没有 %xx 为止"""
@@ -175,15 +175,55 @@ def handle_text_stream(url: str, access_token: str, payload: dict, callback: Cal
     except requests.exceptions.RequestException as e:
         callback(f"[ERROR] 流式连接异常: {str(e)}")
 
-def get_summary(prompt,text):
+
+def handle_text_with_result(url: str, access_token: str, payload: dict, callback: Callable[[str], None]):
+    """处理流式响应，直接返回最终的 结果"""
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Accept': 'text/event-stream',
+        'Content-Type': 'application/json'
+    }
+    result = ''
+    try:
+        with requests.post(url, headers=headers, json=payload, stream=True, timeout=(3.05, 30)) as resp:
+            resp.raise_for_status()
+            for byte_chunk in resp.iter_content(chunk_size=1024):
+                if not byte_chunk:
+                    continue
+                try:
+                    text_chunk = byte_chunk.decode('utf-8')
+                except UnicodeDecodeError:
+                    text_chunk = byte_chunk.decode('utf-8', errors='replace')
+                
+                buffer = text_chunk
+                
+                # 按SSE分隔符处理完整事件
+                while '\n\n' in buffer:
+                    event_raw, buffer = buffer.split('\n\n', 1)
+                    # 提取data字段内容
+                    data_lines = [line[5:].lstrip() for line in event_raw.split('\n') if line.startswith('data:')]
+                    full_event = '\n'.join(data_lines)
+                    full_event = fully_url_decode(full_event)
+                    
+                    # 提取核心增量文本
+                    core_content = extract_core_content(full_event)
+                    if result in core_content :
+                        result=core_content
+                  
+    except requests.exceptions.RequestException as e:
+        result=f"[ERROR] 流式连接异常: {str(e)}"
+
+    return result
+
+def get_summary(text,prompt=PROMPT):
     text=prompt+ text
     # get session id
     try:
-        result = make_authenticated_request(
+        sessionid_result = make_authenticated_request(
             url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/generate",
             access_token=ACCESS_TOKEN
         )
-        res_data=result.get('data')
+        res_data=sessionid_result.get('data')
         session_id = res_data.get('data')
 
     except requests.exceptions.RequestException as e:
@@ -199,7 +239,7 @@ def get_summary(prompt,text):
     if session_id :
         
         try:
-            handle_text_stream(
+            result=handle_text_with_result(
                 url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/sendMsg",
                 access_token=ACCESS_TOKEN,
                 payload={
@@ -209,9 +249,11 @@ def get_summary(prompt,text):
                 },
                 callback=demo_callback
             )
+            print(f"{result=}")
+            return result
         except KeyboardInterrupt:
             print("\n用户主动终止连接")
-
+    
 # 使用示例
 # 发送消息 开始对话
 if __name__ == "__main__":
@@ -219,49 +261,52 @@ if __name__ == "__main__":
     text=fetch_paper.fetch_paper(papers)[0]
     text= PROMPT
     # get session id
-    try:
-        result = make_authenticated_request(
-            url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/generate",
-            access_token=ACCESS_TOKEN
-        )
-        #  result 数据结构
-        #         {
-        #     "code": "00000",
-        #     "msg": null,
-        #     "data": "11535115-9f0c-4c07-9da8-71db5648625b",
-        #     "traceId": "39960dcff0df420c9e309b695c103914"
-        # }
-        print(f"响应状态码: {result['status_code']}")
-        # print(f"响应数据: {result['data']}")
-        res_data=result.get('data')
-        session_id = res_data.get('data')
+    res=get_summary('hello')
+    print(f"{res=}")
+    # try:
+    #     result = make_authenticated_request(
+    #         url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/generate",
+    #         access_token=ACCESS_TOKEN
+    #     )
+    #     #  result 数据结构
+    #     #         {
+    #     #     "code": "00000",
+    #     #     "msg": null,
+    #     #     "data": "11535115-9f0c-4c07-9da8-71db5648625b",
+    #     #     "traceId": "39960dcff0df420c9e309b695c103914"
+    #     # }
+    #     print(f"响应状态码: {result['status_code']}")
+    #     # print(f"响应数据: {result['data']}")
+    #     res_data=result.get('data')
+    #     session_id = res_data.get('data')
 
-        print(f'{session_id=}')
-    except requests.exceptions.RequestException as e:
-        print(f"请求发生错误: {e}")
+    #     print(f'{session_id=}')
+    # except requests.exceptions.RequestException as e:
+    #     print(f"请求发生错误: {e}")
     
-    def demo_callback(content: str):
-        """简单的控制台打印回调"""
-        if content.startswith('[ERROR]'):
-            print(f"\033[31m{content}\033[0m")
-        else:
-            print(f"收到内容: {content}")
+    # def demo_callback(content: str):
+    #     """简单的控制台打印回调"""
+    #     if content.startswith('[ERROR]'):
+    #         print(f"\033[31m{content}\033[0m")
+    #     else:
+    #         print(f"收到内容: {content}")
 
-    if session_id is not None:
+    # if session_id :
             
-        try:
-            handle_text_stream(
-                url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/sendMsg",
-                access_token=ACCESS_TOKEN,
-                payload={
-                    "text": text,
-                    "sessionId": session_id,
-                    "module": "GeoGPT-R1-Preview" #[ Qwen2.5-72B-GeoGPT , GeoGPT-R1-Preview , DeepSeekR1-GeoGPT ]
-                },
-                callback=demo_callback
-            )
-        except KeyboardInterrupt:
-            print("\n用户主动终止连接")
+    #     try:
+    #         res=handle_text_with_result(
+    #             url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/sendMsg",
+    #             access_token=ACCESS_TOKEN,
+    #             payload={
+    #                 "text": text,
+    #                 "sessionId": session_id,
+    #                 "module": "GeoGPT-R1-Preview" #[ Qwen2.5-72B-GeoGPT , GeoGPT-R1-Preview , DeepSeekR1-GeoGPT ]
+    #             },
+    #             callback=demo_callback
+    #         )
+    #         print(res)
+    #     except KeyboardInterrupt:
+    #         print("\n用户主动终止连接")
 
 # # 使用示例
 # if __name__ == "__main__":
