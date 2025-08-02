@@ -5,17 +5,17 @@ import json
 url = "https://api.semanticscholar.org/recommendations/v1/papers"
 
 
-def load_paper_list():
+def load_paper_list() -> list[str]:
     with open('papers.json', 'r') as output:
         return json.load(output)
 
 
-def save_paper_list(papers):
+def save_paper_list(papers: list[str]):
     with open('papers.json', 'w') as output:
         return json.dump(papers, output)
 
 
-def fetch_paper(papers):
+def fetch_paper(papers: list[str]) -> list:
     # Define the query parameters
     query_params = {
         "fields": "citationCount,abstract",
@@ -32,20 +32,13 @@ def fetch_paper(papers):
     # headers = {"x-api-key": api_key}
     # Send the API request
     response = requests.post(url, params=query_params, json=data).json()
-    
     # Sort the recommended papers by citation count
     papers = response["recommendedPapers"]
     papers.sort(key=lambda paper: paper["citationCount"], reverse=True)
     # print(papers)
     # with open('recommended_papers_sorted.json', 'w') as output:
     #     json.dump(papers, output)
-    abstracts = []
-    for paper in papers:
-        abstract = paper["abstract"]
-        if abstract is None:
-            continue
-        abstracts.append(abstract)
-    return abstracts
+    return papers
 
 
 if __name__ == '__main__':
