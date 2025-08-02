@@ -22,8 +22,11 @@ def fetch_paper(papers):
         "limit": "5"
     }
     # Define the request data
+    paper_ids = []
+    for paper in papers:
+        paper_ids.append(paper["paperId"])
     data = {
-        "positivePaperIds": papers,
+        "positivePaperIds": paper_ids,
     }
     # Directly define the API key (Reminder: Securely handle API keys in production environments)
     # api_key = "your api key goes here"  # Replace with the actual API key
@@ -32,20 +35,13 @@ def fetch_paper(papers):
     # headers = {"x-api-key": api_key}
     # Send the API request
     response = requests.post(url, params=query_params, json=data).json()
-    
     # Sort the recommended papers by citation count
     papers = response["recommendedPapers"]
     papers.sort(key=lambda paper: paper["citationCount"], reverse=True)
     # print(papers)
-    # with open('recommended_papers_sorted.json', 'w') as output:
+    # with open('papers.json', 'w') as output:
     #     json.dump(papers, output)
-    abstracts = []
-    for paper in papers:
-        abstract = paper["abstract"]
-        if abstract is None:
-            continue
-        abstracts.append(abstract)
-    return abstracts
+    return papers
 
 
 if __name__ == '__main__':
