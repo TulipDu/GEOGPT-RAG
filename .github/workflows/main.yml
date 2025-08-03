@@ -30,7 +30,7 @@ jobs:
     - name: Run Streamlit app
       run: |
         # 后台运行 Streamlit
-        nohup streamlit run api.py --server.port 8501 --server.headless true > streamlit.log 2>&1 &
+        nohup streamlit run stream_demo.py --server.port 8501 --server.headless true > streamlit.log 2>&1 &
         sleep 5  # 给应用启动时间
         
         # 检查是否运行成功
