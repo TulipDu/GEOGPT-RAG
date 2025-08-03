@@ -85,7 +85,8 @@ if st.button(
         list = fetch_paper.fetch_paper(data)
         titles = [paper["title"] for paper in list]
         citationCount = [paper["citationCount"] for paper in list]
-        summary = [api.get_summary(paper['abstract']) for paper in list]
+        abstracts = "\n\n".join([paper["abstract"] for paper in list if paper["abstract"]])
+        summary = api.get_summary(abstracts)
     
     st.subheader("📚 论文列表", divider="rainbow")
     
@@ -93,8 +94,7 @@ if st.button(
     df = pd.DataFrame({
         "ID": range(1, len(titles)+1),
         "Title": titles,
-        "Citations": citationCount,
-        "Summary": summary
+        "Citations": citationCount
     })
     
     # 使用CSS实现自动换行
@@ -137,16 +137,16 @@ if st.button(
                 "引用次数",
                 help="论文被引用次数",
                 format="%d 次"
-            ),
-            "Summary": st.column_config.TextColumn(
-                "摘要",
-                width="large",
-                help="论文摘要"
             )
+
         },
         hide_index=True,
         use_container_width=True
     )
+    summary = summary.replace("\\n", "\n")  # 替换换行符为 Markdown 换行
+    st.markdown(summary)
+
+
     
 
     

@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import unquote
 ACCESS_TOKEN="sk-VN48920329mF334e414B"
 
-PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份500字的论文小结，。"
+PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份200字的论文小结，。"
 
 @dataclass
 class MessageContent:
