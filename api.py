@@ -1,14 +1,15 @@
 import requests
-import requests
 import warnings
 from typing import Callable
 import urllib.parse
 import json 
 import fetch_paper
 import re
+import time
+from typing import Union, Dict, Any
 ACCESS_TOKEN="sk-VN48920329mF334e414B"
 
-PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份论文小结，。"
+PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份500字的论文小结，。"
 
 def fully_url_decode(s: str) -> str:
     """重复 URL 解码，直到没有 %xx 为止"""
@@ -113,109 +114,212 @@ def make_authenticated_request(url, access_token):
             error_info['timeout'] = 10
         raise requests.exceptions.RequestException(f"请求失败: {error_info}") from e
 
-def process_sse_event(raw_event: str, callback: Callable[[str], None]) -> None:
-    """
-    解析SSE事件格式并提取纯文本内容
+def demo_callback(content: str):
+        """简单的控制台打印回调"""
+        if content.startswith('[ERROR]'):
+            print(f"\033[31m{content}\033[0m")
+        else:
+            # if has end res= response 
+            print(f"{content}",end='')
 
-    SSE事件示例：
-    data: 第一行内容
-    data: 第二行内容
+def stream_callback(content:str):
+    decode_mix_content=decode_mixed_content(content)
+    status = decode_mix_content['status']
+    assert status == "success"
+    decode_full_content=decode_mix_content['content']
+  
+    markdown_contents=decode_full_content['markdown']
+    if 'end' in decode_full_content.keys():
+        final_result = markdown_contents[-1]['content']
+        print(f"\n ******问题处理完成，结果：{final_result} -------")
+
+ 
+ 
+
+def handle_text_stream(url: str,
+                       access_token: str,
+                       payload: dict,
+                       callback: Callable[[str], None]=demo_callback,
+                       chunk_size: int = 1024,
+                       delimiter: str = '\n\n') -> str:
+    """
+    Core method for handling plain text SSE streaming responses
+
+    Parameters:
+    url: Streaming API endpoint
+    access_token: Authentication token
+    payload: Request payload dictionary
+    callback: Callback function triggered when receiving complete events
+    chunk_size: Network read chunk size (bytes)
+    delimiter: Event delimiter (default SSE standard double newline)
+    """
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Accept': 'text/event-stream',
+        'Content-Type': 'application/json'
+    }
+    
+    past_token=''
+    past_id=0
+    past_len=0
+    buffer = ''  # Cross-chunk buffer
+    try:
+        with requests.post(url,
+                           headers=headers,
+                           json=payload,
+                           stream=True,
+                           timeout=(3.05, 30)) as resp:
+
+            resp.raise_for_status()
+            print(f'{resp=}')
+            for byte_chunk in resp.iter_content(chunk_size=chunk_size):
+                if not byte_chunk:
+                    continue
+                # Decode and handle encoding issues
+                try:
+                    text_chunk = byte_chunk.decode('utf-8')
+                except UnicodeDecodeError:
+                    text_chunk = byte_chunk.decode('utf-8', errors='replace')
+                    warnings.warn("Detected non-UTF-8 characters, replaced malformed bytes")
+                buffer += text_chunk
+                # Split complete events
+                while delimiter in buffer:
+                    event_raw, buffer = buffer.split(delimiter, 1)
+                    res=process_sse_event(event_raw.strip(),callback=None)
+                    if not  res:
+                        continue
+                    decode_mix_content=decode_mixed_content(res)
+                    status = decode_mix_content['status']
+                    assert status == "success"
+                    decode_full_content=decode_mix_content['content']
+                    markdown_contents=decode_full_content['markdown']
+
+                    time.sleep(0)
+                    cur_id=int(markdown_contents[-1]['id'])
+
+                    if markdown_contents[-1]['type'] == 'Thinking':
+                        cur_token=markdown_contents[-1]['content']['content']
+                    elif markdown_contents[-1]['type'] == 'MarkDown':
+                        cur_token=markdown_contents[-1]['content']
+                    else:
+                        cur_token=''
+                        print(f"输出的contents type 未处理")
+                        print(f"{markdown_contents=}")
+                    cur_len=len(cur_token)
+                    if cur_id== past_id:
+                        assert cur_len>=past_len
+                        if  past_len>0 and cur_len==past_len:
+                            time.sleep(1)
+                            if 'end' in decode_full_content.keys():
+                                final_result = markdown_contents[-1]['content']
+                             
+                                return final_result
+                            else:
+                                continue
+                        new_token=cur_token[-(cur_len-past_len):]
+                        past_token=cur_token
+                        past_len=cur_len
+                        callback(new_token)
+                    else:
+                        past_id=cur_id
+                        past_token=''
+                        past_len=0
+                    if 'end' in decode_full_content.keys():
+                        final_result = markdown_contents[-1]['content']
+                        print(f"******问题处理完成，结果：{final_result} -------")
+                        return final_result
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Streaming connection error: {str(e)}"
+        if buffer:
+            error_msg += f"\nUnprocessed buffer: {buffer[:200]}{'...' if len(buffer) > 200 else ''}"
+        callback(f"[ERROR] {error_msg}")
+        return " "
+
+
+
+def process_sse_event(raw_event: str, callback: Callable[[str], None]) -> str:
+    """
+    Parse SSE event format and extract plain text content
+
+    SSE event example:
+    data: First line content
+    data: Second line content
     """
     event_lines = [line.strip() for line in raw_event.split('\n') if line.strip()]
     content_lines = []
 
     for line in event_lines:
         if line.startswith('data:'):
-            # 提取data字段内容（允许前导空格）
-            content = line[5:].lstrip()
+            # Extract data field content (allowing leading spaces)
+            content = line.lstrip()
             content_lines.append(content)
         elif line.startswith(':'):
-            # 忽略注释行
+            # Ignore comment lines
             continue
 
-    # 合并多行data内容
+    # Merge multi-line data content
     full_content = '\n'.join(content_lines)
-    full_content=fully_url_decode(full_content)
+    return full_content
     if full_content:
-        callback(full_content)
+       
+        return callback(full_content)
 
-def handle_text_stream(url: str, access_token: str, payload: dict, callback: Callable[[str], None]):
-    """处理流式响应，提取核心内容后调用回调"""
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Accept': 'text/event-stream',
-        'Content-Type': 'application/json'
-    }
-    buffer = ''
+def decode_mixed_content(encoded_input: Union[bytes, str]) -> Dict[str, Any]:
+    """
+    解析包含XML标签的混合结构内容，提取并解码其中的JSON部分
+    
+    参数:
+        encoded_input: 包含XML标签的编码字节流或字符串
+        
+    返回:
+        解析后的的内容字典；若失败则返回错误信息
+    """
     try:
-        with requests.post(url, headers=headers, json=payload, stream=True, timeout=(3.05, 30)) as resp:
-            resp.raise_for_status()
-            for byte_chunk in resp.iter_content(chunk_size=1024):
-                if not byte_chunk:
-                    continue
-                try:
-                    text_chunk = byte_chunk.decode('utf-8')
-                except UnicodeDecodeError:
-                    text_chunk = byte_chunk.decode('utf-8', errors='replace')
-                
-                buffer += text_chunk
-                
-                # 按SSE分隔符处理完整事件
-                while '\n\n' in buffer:
-                    event_raw, buffer = buffer.split('\n\n', 1)
-                    # 提取data字段内容
-                    data_lines = [line[5:].lstrip() for line in event_raw.split('\n') if line.startswith('data:')]
-                    full_event = '\n'.join(data_lines)
-                    full_event = fully_url_decode(full_event)
-                    
-                    # 提取核心增量文本
-                    core_content = extract_core_content(full_event)
-                    if core_content:
-                        callback(core_content)
-    except requests.exceptions.RequestException as e:
-        callback(f"[ERROR] 流式连接异常: {str(e)}")
+        # 1. 字节转字符串并处理基础转义
+        if isinstance(encoded_input, bytes):
+            raw_str = encoded_input.decode('utf-8', errors='replace')
+        else:
+            raw_str = encoded_input
+   
+        # 2. 清理外层包裹（SSE前缀、引号等）
+        processed_str = raw_str.replace('\\"', '"')  # 处理转义引号
+        processed_str = re.sub(r'^data:"|"$', '', processed_str)  # 移除data:前缀和首尾引号
+        processed_str = processed_str.strip()
+        
+        # 3. 提取所有XML标签内容（返回标签-值字典）
+        tag_pattern = re.compile(r'<(\w+)>(.*?)</\1>', re.DOTALL)
+        tags = {match[0]: match[1] for match in tag_pattern.findall(processed_str)}
+        
+        # 4. 对每个标签的值进行URL解码
+        decoded_tags = {}
+        for tag, value in tags.items():
+            # 重复URL解码处理嵌套编码
+            decoded_value = value
+            prev_value = None
+            while prev_value != decoded_value:
+                prev_value = decoded_value
+                decoded_value = urllib.parse.unquote(decoded_value)
+            decoded_tags[tag] = decoded_value
+        
+        # 5. 尝试解析markdown字段为JSON（如果存在）
+        if 'markdown' in decoded_tags:
+            decoded_tags['markdown'] = json.loads(decoded_tags['markdown'])
+     
+        return {
+            "status": "success",
+            "content": decoded_tags
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "解析失败",
+            "details": str(e),
+            "raw_input": str(encoded_input)[:200]
+        }
 
 
-def handle_text_with_result(url: str, access_token: str, payload: dict, callback: Callable[[str], None]):
-    """处理流式响应，直接返回最终的 结果"""
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Accept': 'text/event-stream',
-        'Content-Type': 'application/json'
-    }
-    result = ''
-    try:
-        with requests.post(url, headers=headers, json=payload, stream=True, timeout=(3.05, 30)) as resp:
-            resp.raise_for_status()
-            for byte_chunk in resp.iter_content(chunk_size=1024):
-                if not byte_chunk:
-                    continue
-                try:
-                    text_chunk = byte_chunk.decode('utf-8')
-                except UnicodeDecodeError:
-                    text_chunk = byte_chunk.decode('utf-8', errors='replace')
-                
-                buffer = text_chunk
-                
-                # 按SSE分隔符处理完整事件
-                while '\n\n' in buffer:
-                    event_raw, buffer = buffer.split('\n\n', 1)
-                    # 提取data字段内容
-                    data_lines = [line[5:].lstrip() for line in event_raw.split('\n') if line.startswith('data:')]
-                    full_event = '\n'.join(data_lines)
-                    full_event = fully_url_decode(full_event)
-                    
-                    # 提取核心增量文本
-                    core_content = extract_core_content(full_event)
-                    if result in core_content :
-                        result=core_content
-                  
-    except requests.exceptions.RequestException as e:
-        result=f"[ERROR] 流式连接异常: {str(e)}"
-
-    return result
-
-def get_summary(text,prompt=PROMPT):
+def get_summary(text,prompt=PROMPT,chunk_size=1024,delimiter: str = '\n\n'):
     text=prompt+ text
     # get session id
     try:
@@ -229,17 +333,11 @@ def get_summary(text,prompt=PROMPT):
     except requests.exceptions.RequestException as e:
         print(f"请求发生错误: {e}")
 
-    def demo_callback(content: str):
-        """简单的控制台打印回调"""
-        if content.startswith('[ERROR]'):
-            print(f"\033[31m{content}\033[0m")
-        else:
-            print(f"收到内容: {content}")
 
     if session_id :
         
         try:
-            result=handle_text_with_result(
+            result=handle_text_stream(
                 url="https://geogpt.zero2x.org.cn/be-api/service/api/geoChat/sendMsg",
                 access_token=ACCESS_TOKEN,
                 payload={
@@ -247,9 +345,11 @@ def get_summary(text,prompt=PROMPT):
                     "sessionId": session_id,
                     "module": "GeoGPT-R1-Preview" #[ Qwen2.5-72B-GeoGPT , GeoGPT-R1-Preview , DeepSeekR1-GeoGPT ]
                 },
-                callback=demo_callback
+                #  call_back ,
+                chunk_size=chunk_size,
+                delimiter=delimiter
             )
-            print(f"{result=}")
+  
             return result
         except KeyboardInterrupt:
             print("\n用户主动终止连接")
@@ -258,10 +358,12 @@ def get_summary(text,prompt=PROMPT):
 # 发送消息 开始对话
 if __name__ == "__main__":
     papers = fetch_paper.load_paper_list()
-    text=fetch_paper.fetch_paper(papers)[0]
-    text= PROMPT
+    papers=fetch_paper.fetch_paper(papers)
+    text=' '.join([paper.get('abstract')  for paper in papers if  paper.get('abstract')  is not None])
+  
     # get session id
-    res=get_summary('hello')
+
+    res=get_summary(text)
     print(f"{res=}")
     # try:
     #     result = make_authenticated_request(
@@ -342,3 +444,5 @@ if __name__ == "__main__":
 #     "sessionId": "017f6e88-170c-48e7-b8a1-c88fe2c22a83",
 #     "module": "GeoGPT-R1-Preview"
 # }'
+
+
