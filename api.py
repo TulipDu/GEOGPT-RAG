@@ -7,10 +7,81 @@ import fetch_paper
 import re
 import time
 from typing import Union, Dict, Any
+from dataclasses import dataclass
+from typing import List, Dict, Union
+import xml.etree.ElementTree as ET
+from urllib.parse import unquote
 ACCESS_TOKEN="sk-VN48920329mF334e414B"
 
 PROMPT="你是一名研究人员，请你根据当前给出的论文摘要，给出一份500字的论文小结，。"
 
+@dataclass
+class MessageContent:
+    """思考过程的内容结构"""
+    status: str
+    content: str
+    time: str
+
+@dataclass
+class Message:
+    """消息对象"""
+    type: str
+    id: str
+    content: Union[str, MessageContent]  # 可以是字符串或MessageContent对象
+    
+    def __post_init__(self):
+        # 如果content是字典，自动转换为MessageContent对象
+        if isinstance(self.content, dict):
+            self.content = MessageContent(
+                status=self.content.get("status", ""),
+                content=self.content.get("content", ""),
+                time=self.content.get("time", "")
+            )
+
+@dataclass
+class ParsedData:
+    """解析后的完整数据结构"""
+    plugin_code: str
+    session_id: str
+    question_id: str
+    answer_id: str
+    messages: List[Message]
+    isend: bool
+    
+    @classmethod
+    def from_raw_data(cls, raw_data: str):
+        """从原始数据创建解析对象"""
+        # 清理数据（去除外层引号和转义符）
+        cleaned = raw_data.strip('"')
+        
+        # 解析 XML
+        root = ET.fromstring(f"<root>{cleaned}</root>")
+        
+        # 提取基础信息
+        plugin_code = root.find("pluginCode").text
+        session_id = root.find("sessionId").text
+        question_id = root.find("questionId").text
+        answer_id = root.find("answerId").text
+        isend = True if root.find("end") else False
+        
+        # 处理 markdown 内容
+        markdown_data = unquote(root.find("markdown").text)
+        messages_json = json.loads(markdown_data)
+        
+        # 创建Message对象列表
+        messages = [
+            Message(type=msg["type"], id=msg["id"], content=msg["content"])
+            for msg in messages_json
+        ]
+        
+        return cls(
+            plugin_code=plugin_code,
+            session_id=session_id,
+            question_id=question_id,
+            answer_id=answer_id,
+            messages=messages,
+            isend=isend
+        )
 def fully_url_decode(s: str) -> str:
     """重复 URL 解码，直到没有 %xx 为止"""
     prev = None
@@ -35,33 +106,6 @@ def clean_json_string(raw_str: str):
     except json.JSONDecodeError:
         # 不是标准 JSON 就直接返回纯文本
         return decoded
-
-def extract_core_content(raw_content: str) -> str:
-    """
-    从原始响应中提取核心增量文本
-    步骤：1. 提取<markdown>标签内的内容 2. 解析JSON 3. 获取content.content字段
-    """
-    try:
-        # 1. 用正则提取<markdown>标签内的内容（处理可能的引号和转义）
-        markdown_match = re.search(r'<markdown>(.*?)</markdown>', raw_content, re.DOTALL)
-        if not markdown_match:
-            return ""
-        markdown_str = markdown_match.group(1).strip()
-        
-        # 2. 去除可能的外层引号（如示例中的\"）
-        markdown_str = re.sub(r'^["\']|["\']$', '', markdown_str)
-        
-        # 3. 解析JSON（处理可能的转义字符）
-        markdown_json = json.loads(markdown_str)
-        if isinstance(markdown_json, list) and len(markdown_json) > 0:
-            # 提取content.content字段
-            thinking_content = markdown_json[0].get("content", {}).get("content", "")
-            return thinking_content
-        return ""
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        # 解析失败时返回原始内容（便于调试）
-        warnings.warn(f"解析核心内容失败: {e}，原始内容: {raw_content[:100]}")
-        return ""
 
 
 
@@ -122,20 +166,7 @@ def demo_callback(content: str):
             # if has end res= response 
             print(f"{content}",end='')
 
-def stream_callback(content:str):
-    decode_mix_content=decode_mixed_content(content)
-    status = decode_mix_content['status']
-    assert status == "success"
-    decode_full_content=decode_mix_content['content']
-  
-    markdown_contents=decode_full_content['markdown']
-    if 'end' in decode_full_content.keys():
-        final_result = markdown_contents[-1]['content']
-        print(f"\n ******问题处理完成，结果：{final_result} -------")
-
  
- 
-
 def handle_text_stream(url: str,
                        access_token: str,
                        payload: dict,
@@ -163,6 +194,7 @@ def handle_text_stream(url: str,
     past_id=0
     past_len=0
     buffer = ''  # Cross-chunk buffer
+
     try:
         with requests.post(url,
                            headers=headers,
@@ -188,33 +220,26 @@ def handle_text_stream(url: str,
                     res=process_sse_event(event_raw.strip(),callback=None)
                     if not  res:
                         continue
-                    decode_mix_content=decode_mixed_content(res)
-                    status = decode_mix_content['status']
-                    assert status == "success"
-                    decode_full_content=decode_mix_content['content']
-                    markdown_contents=decode_full_content['markdown']
-
+                    
+                    decode_msg=ParsedData.from_raw_data(res)
+                    markdown_contents=decode_msg.messages
+                    cur_message= markdown_contents[-1]
                     time.sleep(0)
-                    cur_id=int(markdown_contents[-1]['id'])
+                    cur_id=int(cur_message.id)
 
-                    if markdown_contents[-1]['type'] == 'Thinking':
-                        cur_token=markdown_contents[-1]['content']['content']
-                    elif markdown_contents[-1]['type'] == 'MarkDown':
-                        cur_token=markdown_contents[-1]['content']
+                    if cur_message.type == 'Thinking':
+                        cur_token=fully_url_decode(cur_message.content.content)
+                    elif cur_message.type == 'MarkDown':
+                        cur_token=fully_url_decode(cur_message.content)
                     else:
                         cur_token=''
                         print(f"输出的contents type 未处理")
-                        print(f"{markdown_contents=}")
+                        print(f"{cur_message=}")
                     cur_len=len(cur_token)
                     if cur_id== past_id:
                         assert cur_len>=past_len
                         if  past_len>0 and cur_len==past_len:
-                            time.sleep(1)
-                            if 'end' in decode_full_content.keys():
-                                final_result = markdown_contents[-1]['content']
-                             
-                                return final_result
-                            else:
+                            # if decode_msg.isend !=True:
                                 continue
                         new_token=cur_token[-(cur_len-past_len):]
                         past_token=cur_token
@@ -224,17 +249,13 @@ def handle_text_stream(url: str,
                         past_id=cur_id
                         past_token=''
                         past_len=0
-                    if 'end' in decode_full_content.keys():
-                        final_result = markdown_contents[-1]['content']
-                        print(f"******问题处理完成，结果：{final_result} -------")
-                        return final_result
+                        print(f"\n ***$$$ 开启新type {cur_message.type} 1111 \n")
+            return cur_token
     except requests.exceptions.RequestException as e:
         error_msg = f"Streaming connection error: {str(e)}"
         if buffer:
             error_msg += f"\nUnprocessed buffer: {buffer[:200]}{'...' if len(buffer) > 200 else ''}"
         callback(f"[ERROR] {error_msg}")
-        return " "
-
 
 
 def process_sse_event(raw_event: str, callback: Callable[[str], None]) -> str:
@@ -263,60 +284,6 @@ def process_sse_event(raw_event: str, callback: Callable[[str], None]) -> str:
     if full_content:
        
         return callback(full_content)
-
-def decode_mixed_content(encoded_input: Union[bytes, str]) -> Dict[str, Any]:
-    """
-    解析包含XML标签的混合结构内容，提取并解码其中的JSON部分
-    
-    参数:
-        encoded_input: 包含XML标签的编码字节流或字符串
-        
-    返回:
-        解析后的的内容字典；若失败则返回错误信息
-    """
-    try:
-        # 1. 字节转字符串并处理基础转义
-        if isinstance(encoded_input, bytes):
-            raw_str = encoded_input.decode('utf-8', errors='replace')
-        else:
-            raw_str = encoded_input
-   
-        # 2. 清理外层包裹（SSE前缀、引号等）
-        processed_str = raw_str.replace('\\"', '"')  # 处理转义引号
-        processed_str = re.sub(r'^data:"|"$', '', processed_str)  # 移除data:前缀和首尾引号
-        processed_str = processed_str.strip()
-        
-        # 3. 提取所有XML标签内容（返回标签-值字典）
-        tag_pattern = re.compile(r'<(\w+)>(.*?)</\1>', re.DOTALL)
-        tags = {match[0]: match[1] for match in tag_pattern.findall(processed_str)}
-        
-        # 4. 对每个标签的值进行URL解码
-        decoded_tags = {}
-        for tag, value in tags.items():
-            # 重复URL解码处理嵌套编码
-            decoded_value = value
-            prev_value = None
-            while prev_value != decoded_value:
-                prev_value = decoded_value
-                decoded_value = urllib.parse.unquote(decoded_value)
-            decoded_tags[tag] = decoded_value
-        
-        # 5. 尝试解析markdown字段为JSON（如果存在）
-        if 'markdown' in decoded_tags:
-            decoded_tags['markdown'] = json.loads(decoded_tags['markdown'])
-     
-        return {
-            "status": "success",
-            "content": decoded_tags
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": "解析失败",
-            "details": str(e),
-            "raw_input": str(encoded_input)[:200]
-        }
 
 
 def get_summary(text,prompt=PROMPT,chunk_size=1024,delimiter: str = '\n\n'):
@@ -362,10 +329,10 @@ if __name__ == "__main__":
     papers = fetch_paper.load_paper_list()
     papers=fetch_paper.fetch_paper(papers)
     text=' '.join([paper.get('abstract')  for paper in papers if  paper.get('abstract')  is not None])
-  
+    # text='你好,输出5个字'
     # get session id
 
-    res=get_summary(text)
+    res=get_summary(text,prompt="")
     print(f"{res=}")
     # try:
     #     result = make_authenticated_request(
