@@ -1,8 +1,6 @@
 import streamlit as st
-import requests
 import api
 import fetch_paper
-import pandas as pd
 
 st.set_page_config(layout="wide")  # 使用宽屏布局获得更好的表格显示
 st.header("📚 每日论文速递", divider="rainbow")
@@ -23,58 +21,14 @@ data = fetch_paper.load_paper_list()
 
 
 # 2. 触发请求
-if st.button(
-    "📋 List Papers", 
-    help="点击显示今日精选论文列表，包含标题和引用次数信息"
-):
-    titles = [paper["title"] for paper in data]
-    citationCount = [paper["citationCount"] for paper in data]
-    
-    st.subheader("📚 今日精选论文", divider="rainbow")
-    
-    # 创建可交互的Dataframe
-    df = pd.DataFrame({
-        "序号": range(1, len(titles)+1),
-        "论文标题": titles,
-        "引用次数": citationCount
-    })
-    
-    # 添加CSS实现自动换行
-    st.markdown("""
-    <style>
-        /* 表格自动换行 */
-        div[data-testid="stDataFrame"] div[data-testid="stDataFrameCell"] {
-            white-space: normal !important;
-            word-break: break-word !important;
-        }
-        
-        /* 增大行高 */
-        div[data-testid="stDataFrame"] div[data-testid="stDataFrameRow"] {
-            min-height: 60px;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    st.dataframe(
-        df,
-        column_config={
-            "序号": st.column_config.NumberColumn(
-                width="small",
-                help="论文序号，从1开始"
-            ),
-            "论文标题": st.column_config.TextColumn(
-                width="large",
-                help="论文完整标题，点击可排序"
-            ),
-            "引用次数": st.column_config.NumberColumn(
-                help="论文被引用的次数，点击可排序",
-                format="%d 次"
-            )
-        },
-        hide_index=True,
-        use_container_width=True
-    )
 
+for paper in data:
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.subheader(paper['title'])
+    with col2:
+        st.metric("citationCount", paper['citationCount'])
+    st.divider()
 
 if st.button(
         "🔍 Find related papers",
@@ -87,69 +41,27 @@ if st.button(
         citationCount = [paper["citationCount"] for paper in list]
         abstracts = "\n\n".join([paper["abstract"] for paper in list if paper["abstract"]])
         summary = api.get_summary(abstracts)
-    
-    st.subheader("📚 论文列表", divider="rainbow")
-    
-    # 创建自适应高度的表格
-    df = pd.DataFrame({
-        "ID": range(1, len(titles)+1),
-        "Title": titles,
-        "Citations": citationCount
-    })
-    
-    # 使用CSS实现自动换行
-    st.markdown("""
-    <style>
-        /* 设置表格自动换行 */
-        div[data-testid="stDataFrame"] div[data-testid="stDataFrameCell"] {
-            white-space: normal !important;
-            word-break: break-word !important;
-        }
-        
-        /* 增大行高 */
-        div[data-testid="stDataFrame"] div[data-testid="stDataFrameRow"] {
-            min-height: 100px;
-        }
-        
-        /* 标题列加粗 */
-        div[data-testid="stDataFrame"] div[data-testid="stDataFrameColumnHeader"] {
-            font-weight: bold;
-            background-color: #f0f2f6;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # 显示表格
-    st.dataframe(
-        df,
-        column_config={
-            "ID": st.column_config.NumberColumn(
-                "序号", 
-                width="small",
-                help="论文序号"
-            ),
-            "Title": st.column_config.TextColumn(
-                "论文标题",
-                width="large",
-                help="论文完整标题"
-            ),
-            "Citations": st.column_config.NumberColumn(
-                "引用次数",
-                help="论文被引用次数",
-                format="%d 次"
-            )
 
-        },
-        hide_index=True,
-        use_container_width=True
-    )
-    summary = summary.replace("\\n", "\n")  # 替换换行符为 Markdown 换行
-    st.markdown(summary)
+        st.subheader("📚 论文列表", divider="rainbow")
+        for i, paper in enumerate(list):
+            col1, col2, col3 = st.columns([4, 1, 1])
+            with col1:
+                st.subheader(paper['title'])
+            with col2:
+                st.metric("citationCount", paper['citationCount'])
+            with col3:
+                def on_click():
+                    data.append(st.session_state.paper)
+                    fetch_paper.save_paper_list(data)
+
+                if st.button("Add", key=f"btn_{i}", on_click=on_click):
+                    pass
+                st.divider()
+
+        summary = summary.replace("\\n", "\n")  # 替换换行符为 Markdown 换行
+        st.markdown(summary)
 
 
-    
-
-    
 
 # if st.button("执行任务"):
 #     if not api_key or not prompt:

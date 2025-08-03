@@ -12,7 +12,7 @@ def load_paper_list():
 
 def save_paper_list(papers):
     with open('papers.json', 'w') as output:
-        return json.dump(papers, output)
+        json.dump(papers, output)
 
 
 def fetch_paper(papers):
