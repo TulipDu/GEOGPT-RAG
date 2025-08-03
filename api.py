@@ -320,6 +320,8 @@ def decode_mixed_content(encoded_input: Union[bytes, str]) -> Dict[str, Any]:
 
 
 def get_summary(text,prompt=PROMPT,chunk_size=1024,delimiter: str = '\n\n'):
+    if text is None:
+        return ""
     text=prompt+ text
     # get session id
     try:
