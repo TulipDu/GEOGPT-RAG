@@ -16,13 +16,13 @@ with st.expander("ℹ️ 使用说明", expanded=True):
 # 1. 输入 API Key 和指令
 # api_key = st.sidebar.text_input("GeoGPT API Key", type="password")
 # prompt = st.text_area("请输入您的问题")
-data = fetch_paper.load_paper_list()
+st.session_state.data = fetch_paper.load_paper_list()
 # st.write(data)
 
 
 # 2. 触发请求
 
-for paper in data:
+for paper in st.session_state.data:
     col1, col2 = st.columns([4, 1])
     with col1:
         st.subheader(paper['title'])
@@ -36,32 +36,36 @@ if st.button(
     ):
     # 添加加载状态提升用户体验
     with st.spinner('正在查找相关论文...'):
-        list = fetch_paper.fetch_paper(data)
-        titles = [paper["title"] for paper in list]
-        citationCount = [paper["citationCount"] for paper in list]
-        abstracts = "\n\n".join([paper["abstract"] for paper in list if paper["abstract"]])
+        st.session_state["fetched"] = fetch_paper.fetch_paper(st.session_state.data)
+
+
+if "fetched" in st.session_state:
+    if "fetched_remove_index" in st.session_state:
+        del st.session_state.fetched[st.session_state.fetched_remove_index]
+        del st.session_state.fetched_remove_index
+    titles = [paper["title"] for paper in st.session_state.fetched]
+    citationCount = [paper["citationCount"] for paper in st.session_state.fetched]
+    st.subheader("📚 论文列表", divider="rainbow")
+    for i, paper in enumerate(st.session_state.fetched):
+        col1, col2, col3 = st.columns([4, 1, 1])
+        with col1:
+            st.subheader(paper['title'])
+        with col2:
+            st.metric("citationCount", paper['citationCount'])
+        with col3:
+            if st.button("Add", key=f"btn_{i}"):
+                # st.session_state["added_paper"] = paper
+                st.session_state.data.append(paper)
+                fetch_paper.save_paper_list(st.session_state.data)
+                st.session_state.fetched_remove_index = i
+                pass
+                st.rerun()
+        st.divider()
+    abstracts = "\n\n".join([paper["abstract"] for paper in st.session_state.fetched if paper["abstract"]])
+    with st.spinner("Summarizing..."):
         summary = api.get_summary(abstracts)
-
-        st.subheader("📚 论文列表", divider="rainbow")
-        for i, paper in enumerate(list):
-            col1, col2, col3 = st.columns([4, 1, 1])
-            with col1:
-                st.subheader(paper['title'])
-            with col2:
-                st.metric("citationCount", paper['citationCount'])
-            with col3:
-                def on_click():
-                    data.append(st.session_state.paper)
-                    fetch_paper.save_paper_list(data)
-
-                if st.button("Add", key=f"btn_{i}", on_click=on_click):
-                    pass
-                st.divider()
-
         summary = summary.replace("\\n", "\n")  # 替换换行符为 Markdown 换行
         st.markdown(summary)
-
-
 
 # if st.button("执行任务"):
 #     if not api_key or not prompt:
