@@ -4,9 +4,7 @@ from typing import Callable
 import urllib.parse
 import json 
 import fetch_paper
-import re
 import time
-from typing import Union, Dict, Any
 from dataclasses import dataclass
 from typing import List, Dict, Union
 import xml.etree.ElementTree as ET
