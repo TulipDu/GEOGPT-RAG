@@ -37,6 +37,8 @@ if st.button(
     # 添加加载状态提升用户体验
     with st.spinner('正在查找相关论文...'):
         st.session_state["fetched"] = fetch_paper.fetch_paper(st.session_state.data)
+        if "summary" in st.session_state:
+            del st.session_state.summary
 
 
 if "fetched" in st.session_state:
@@ -45,6 +47,8 @@ if "fetched" in st.session_state:
         del st.session_state.fetched_remove_index
     titles = [paper["title"] for paper in st.session_state.fetched]
     citationCount = [paper["citationCount"] for paper in st.session_state.fetched]
+    abstracts = "\n\n".join([paper["abstract"] for paper in st.session_state.fetched if paper["abstract"]])
+    
     st.subheader("📚 论文列表", divider="rainbow")
     for i, paper in enumerate(st.session_state.fetched):
         col1, col2, col3 = st.columns([4, 1, 1])
@@ -58,15 +62,14 @@ if "fetched" in st.session_state:
                 st.session_state.data.append(paper)
                 fetch_paper.save_paper_list(st.session_state.data)
                 st.session_state.fetched_remove_index = i
-                pass
                 st.rerun()
         st.divider()
-    abstracts = "\n\n".join([paper["abstract"] for paper in st.session_state.fetched if paper["abstract"]])
-    with st.spinner("Summarizing..."):
-        summary = api.get_summary(abstracts)
-        summary = summary.replace("\\n", "\n")  # 替换换行符为 Markdown 换行
-        st.markdown(summary)
-
+    if "summary" not in st.session_state: 
+        with st.spinner("Summarizing..."):
+            st.session_state.summary = api.get_summary(abstracts)
+            st.session_state.summary = st.session_state.summary.replace("\\n", "\n")  # 替换换行符为 Markdown 换行
+    st.markdown(st.session_state.summary)
+    
 # if st.button("执行任务"):
 #     if not api_key or not prompt:
 #         st.error("请填写 API Key 和任务描述。")
